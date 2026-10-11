@@ -1,0 +1,10 @@
+From: Updates <updates@example.org>
+To: analyst@example.org
+Subject: Monthly service summary
+Date: Mon, 12 Oct 2026 10:00:00 +0000
+Authentication-Results: mx.example.org; spf=pass; dkim=pass; dmarc=pass
+Received: from relay.example.org (relay.example.org [203.0.113.8]) by mx.example.org;
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Your monthly summary is ready. This synthetic message contains no links or attachments.

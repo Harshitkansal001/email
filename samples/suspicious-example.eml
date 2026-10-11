@@ -1,0 +1,20 @@
+From: Finance Team <finance@example.org>
+Reply-To: billing@example.net
+To: analyst@example.org
+Subject: Action required: verify your account
+Authentication-Results: mx.example.org; spf=fail; dkim=pass; dmarc=fail
+Received: from relay.example.org (relay.example.org [203.0.113.7]) by mx.example.org;
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="sample-boundary"
+
+--sample-boundary
+Content-Type: text/plain; charset=utf-8
+
+Please verify your password at http://192.0.2.9/account
+--sample-boundary
+Content-Type: application/octet-stream; name="statement.xlsm"
+Content-Disposition: attachment; filename="statement.xlsm"
+Content-Transfer-Encoding: base64
+
+U0FNUExF
+--sample-boundary--
