@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import os
+from http.client import HTTPException
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -67,9 +68,11 @@ def enrich_public_ips(indicators: list[IpIndicator], requested: bool) -> Enrichm
             if not base:
                 raise ValueError("No registry service")
             result = _get_json(base.rstrip("/") + "/ip/" + value)
+            if not isinstance(result, dict):
+                raise ValueError("Invalid registry response")
             results[value].update({"network": str(result.get("name", ""))[:200],
                                    "organization": _organization(result)[:200], "country": str(result.get("country", ""))[:2]})
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        except (OSError, HTTPException, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
             results[value]["registry_error"] = "Registry lookup unavailable"
     failures = sum("registry_error" in item for item in results.values())
     status = "partial" if failures or local_error else "complete"
@@ -140,9 +143,19 @@ def _get_json(url: str):
 
 
 def _organization(record: dict) -> str:
-    for entity in record.get("entities", []):
-        for item in entity.get("vcardArray", [[], []])[1] if isinstance(entity.get("vcardArray"), list) and len(entity["vcardArray"]) > 1 else []:
-            if item[0] in {"fn", "org"} and len(item) > 3:
+    entities = record.get("entities", [])
+    if not isinstance(entities, list):
+        return ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        vcard = entity.get("vcardArray")
+        if not isinstance(vcard, list) or len(vcard) < 2 or not isinstance(vcard[1], list):
+            continue
+        for item in vcard[1]:
+            if not isinstance(item, list) or len(item) < 4 or item[0] not in {"fn", "org"}:
+                continue
+            if len(item) > 3:
                 value = item[3]
                 if isinstance(value, list):
                     value = " ".join(map(str, value))

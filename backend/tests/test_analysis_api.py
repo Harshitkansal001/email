@@ -133,11 +133,32 @@ def test_enrichment_is_opt_in_and_uses_public_registry_data(monkeypatch):
         ip_enrichment._get_json("https://127.0.0.1/latest/meta-data/")
     monkeypatch.setattr(ip_enrichment, "_bootstrap", lambda version: [(ip_network("139.0.0.0/8"), "https://rdap.apnic.net/rdap")])
     monkeypatch.setattr(ip_enrichment, "_get_json", lambda url: {"name": "Example Network", "country": "IN", "entities": []})
+    monkeypatch.setattr(ip_enrichment, "_city_database_path", lambda: Path("/missing/test-city.mmdb"))
     item = IpIndicator(address="139.180.17.170", category="public", evidence_refs=["header:Received:1"])
-    assert ip_enrichment.enrich_public_ips([item], False).status == "not_requested"
+    assert ip_enrichment.enrich_public_ips([item], False).status == "not_configured"
     result = ip_enrichment.enrich_public_ips([item], True)
     assert result.status == "complete"
     assert result.ip_results[0]["network"] == "Example Network"
+
+
+@pytest.mark.parametrize(("response", "status"), [([], "partial"), ({"entities": ["malformed"]}, "complete")])
+def test_malformed_registry_response_does_not_break_analysis(monkeypatch, response, status):
+    from ipaddress import ip_network
+    from app.services import ip_enrichment
+    from app.schemas.analysis import IpIndicator
+
+    monkeypatch.setattr(ip_enrichment, "_city_database_path", lambda: Path("/missing/test-city.mmdb"))
+    monkeypatch.setattr(ip_enrichment, "_bootstrap", lambda version: [(ip_network("139.0.0.0/8"), "https://rdap.apnic.net/rdap")])
+    monkeypatch.setattr(ip_enrichment, "_get_json", lambda url: response)
+    item = IpIndicator(address="139.180.17.170", category="public", evidence_refs=["header:Received:1"])
+
+    result = ip_enrichment.enrich_public_ips([item], True)
+
+    assert result.status == status
+    if status == "partial":
+        assert result.ip_results[0]["registry_error"] == "Registry lookup unavailable"
+    else:
+        assert result.ip_results[0]["organization"] == ""
 
 
 def test_received_headers_are_shown_oldest_first_and_ip_scope_is_labeled(client):
