@@ -2,14 +2,16 @@ import ipaddress
 import re
 from email.utils import parseaddr
 
+import tldextract
+
 from app.schemas.analysis import AuthenticationResults, RouteHop, Routing
 from app.services.email_parser import ParsedEmail
 
 _AUTH_STATUS = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*(pass|fail|softfail|neutral|none|temperror|permerror)\b", re.IGNORECASE)
 _BRACKETED_IP = re.compile(r"\[([0-9A-Fa-f:.%]+)\]")
 _ROUTING_IP = re.compile(r"\b(?:from|by)\s+(\[[^\]]+\]|(?:\d{1,3}\.){3}\d{1,3})(?=\s|[;(]|$)", re.IGNORECASE)
-_AUTH_DOMAIN = re.compile(r"\b(smtp\.mailfrom|header\.from|header\.d)\s*=\s*<?([^\s>;]+)>?", re.IGNORECASE)
 _DKIM_DOMAIN = re.compile(r"(?:^|;)\s*d\s*=\s*([^;\s]+)", re.IGNORECASE)
+_EXTRACT_DOMAIN = tldextract.TLDExtract(suffix_list_urls=None)
 
 
 def analyze_authentication(parsed: ParsedEmail) -> AuthenticationResults:
@@ -26,21 +28,15 @@ def analyze_authentication(parsed: ParsedEmail) -> AuthenticationResults:
     from_address = _header_value(parsed, "from")
     from_domain = _domain(from_address)
     return_path_domain = _domain(_header_value(parsed, "return-path"))
-    auth_domains = {key.lower(): [] for key in ("smtp.mailfrom", "header.d")}
-    for _, value in headers:
-        for key, domain in _AUTH_DOMAIN.findall(value):
-            normalized = _normalize_domain(domain.rsplit("@", 1)[-1] if key.lower() == "smtp.mailfrom" else domain)
-            if normalized and key.lower() in auth_domains:
-                auth_domains[key.lower()].append(normalized)
-    dkim_domains = list(dict.fromkeys(auth_domains["header.d"] + [
+    dkim_domains = sorted({
         normalized for ref, _, value in parsed.headers if ref.startswith("header:dkim-signature:")
-        for domain in _DKIM_DOMAIN.findall(value) if (normalized := _normalize_domain(domain))
-    ]))
-    spf_domains = auth_domains["smtp.mailfrom"] or ([return_path_domain] if return_path_domain else [])
+        for domain in _DKIM_DOMAIN.findall(re.sub(r"\s+", " ", value))
+        if (normalized := _normalize_domain(domain))
+    })
     return_path_alignment = "unknown" if not from_domain or not return_path_domain else (
         "aligned" if _org_domain(from_domain) == _org_domain(return_path_domain) else "not_aligned"
     )
-    spf_alignment = _alignment(statuses["spf"], from_domain, spf_domains)
+    spf_alignment = return_path_alignment if statuses["spf"] == "pass" else "not_aligned"
     dkim_alignment = _alignment(statuses["dkim"], from_domain, dkim_domains)
     return AuthenticationResults(
         **statuses,
@@ -52,7 +48,7 @@ def analyze_authentication(parsed: ParsedEmail) -> AuthenticationResults:
         dkim_domains=dkim_domains,
         spf_alignment=spf_alignment,
         dkim_alignment=dkim_alignment,
-        alignment_note="Common public suffixes are recognized for relaxed alignment. Less common suffixes may need manual review.",
+        alignment_note="",
     )
 
 
@@ -112,12 +108,6 @@ def _alignment(status: str, from_domain: str, domains: list[str]) -> str:
     return "aligned" if any(_org_domain(from_domain) == _org_domain(domain) for domain in domains) else "not_aligned"
 
 
-_MULTI_LABEL_SUFFIXES = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.nz", "com.br", "com.cn", "co.jp", "co.in", "com.sg", "com.mx", "com.tr", "com.tw", "com.hk", "com.ar", "com.co", "co.za", "com.my"}
-
-
 def _org_domain(domain: str) -> str:
-    # shortcut: common multi-label suffixes only; use maintained public-suffix data for uncommon suffixes.
-    labels = domain.split(".")
-    suffix = ".".join(labels[-2:])
-    count = 3 if suffix in _MULTI_LABEL_SUFFIXES else 2
-    return ".".join(labels[-count:]) if len(labels) >= count else domain
+    extracted = _EXTRACT_DOMAIN(domain)
+    return extracted.top_domain_under_public_suffix or domain

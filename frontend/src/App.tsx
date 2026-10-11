@@ -16,6 +16,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [enrichIps, setEnrichIps] = useState(false);
+  const [verifyRdns, setVerifyRdns] = useState(false);
+  const [redactExport, setRedactExport] = useState(true);
   const scanCommand = inputMode === "file" ? `scan --file ${file?.name ?? "[select .eml]"}` : "scan --headers <stdin>";
 
   useEffect(() => {
@@ -53,10 +55,10 @@ export default function App() {
         if (!file) throw new Error("Choose an .eml file first.");
         if (!file.name.toLowerCase().endsWith(".eml")) throw new Error("Choose a file with the .eml extension.");
         if (file.size > MAX_FILE_BYTES) throw new Error("The .eml file must be 5 MB or smaller.");
-        nextReport = await analyzeFile(file, enrichIps);
+        nextReport = await analyzeFile(file, enrichIps, verifyRdns);
       } else {
         if (!rawHeaders.trim()) throw new Error("Paste raw email headers first.");
-        nextReport = await analyzeHeaders(rawHeaders, enrichIps);
+        nextReport = await analyzeHeaders(rawHeaders, enrichIps, verifyRdns);
       }
       // Keep the command log readable before replacing it with a fast result.
       const logDuration = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 2200;
@@ -71,7 +73,10 @@ export default function App() {
 
   function exportReport() {
     if (!report) return;
-    const blob = new Blob([`${JSON.stringify(report, null, 2)}\n`], { type: "application/json" });
+    const blob = new Blob([`${JSON.stringify(report, (_key, value) => redactExport && typeof value === "string" ? value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, (address) => {
+      const [local, domain] = address.split("@");
+      return `${local.length <= 2 ? "***" : `${local.slice(0, 2)}***${local.slice(-2)}`}@${domain}`;
+    }) : value, 2)}\n`], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -152,9 +157,12 @@ export default function App() {
           <label className="enrichment-choice"><input type="checkbox" checked={enrichIps} onChange={(event) => setEnrichIps(event.target.checked)} />
             <span><strong>Also check public IP registries online</strong><small>When selected, up to five public IPs are sent to their registries. MaxMind lookups use a local database when installed.</small></span>
           </label>
+          <label className="enrichment-choice"><input type="checkbox" checked={verifyRdns} onChange={(event) => setVerifyRdns(event.target.checked)} />
+            <span><strong>Check reverse DNS for public IPs</strong><small>When selected, DNS is queried to see whether each IP's hostname resolves back to that IP.</small></span>
+          </label>
         </form>
 
-        {report ? <AnalysisReport report={report} onExport={exportReport} onClear={clearAnalysis} /> : <EmptyReport apiState={apiState} analyzing={analyzing} command={scanCommand} />}
+        {report ? <AnalysisReport report={report} onExport={exportReport} onClear={clearAnalysis} redactExport={redactExport} onRedactExportChange={setRedactExport} /> : <EmptyReport apiState={apiState} analyzing={analyzing} command={scanCommand} />}
       </section>
 
       <footer className="page-footer">
@@ -187,8 +195,8 @@ function EmptyReport({ apiState, analyzing, command }: { apiState: ApiState; ana
   );
 }
 
-function AnalysisReport({ report, onExport, onClear }: { report: AnalysisResponse; onExport: () => void; onClear: () => void }) {
-  const evidence = new Map(report.evidence.map((item) => [item.evidence_ref, item]));
+function AnalysisReport({ report, onExport, onClear, redactExport, onRedactExportChange }: { report: AnalysisResponse; onExport: () => void; onClear: () => void; redactExport: boolean; onRedactExportChange: (value: boolean) => void }) {
+  const evidence = new Map(report.evidence.flatMap((item) => (item.evidence_refs?.length ? item.evidence_refs : [item.evidence_ref]).map((ref) => [ref, item] as const)));
   return (
     <section className="results-panel" aria-live="polite" aria-label="Analysis report">
       <div className="report-heading">
@@ -197,6 +205,7 @@ function AnalysisReport({ report, onExport, onClear }: { report: AnalysisRespons
           <h2>Your results</h2>
         </div>
         <div className="report-actions">
+          <label><input type="checkbox" checked={redactExport} onChange={(event) => onRedactExportChange(event.target.checked)} /> Mask addresses in export</label>
           <button className="quiet-button" onClick={onExport}>Download report</button>
           <button className="quiet-button" onClick={onClear}>New analysis</button>
         </div>
@@ -231,13 +240,13 @@ function AnalysisReport({ report, onExport, onClear }: { report: AnalysisRespons
           <div className="auth-item" key={name}><span>{authName(name)}</span><strong className={`auth-${report.authentication[name]}`}>{authLabel(report.authentication[name])}</strong></div>
         ))}</div>
         <p className="muted-copy">These checks try to confirm who sent the email. We only read the result written in the email, so it may be false.</p>
-        <div className="alignment-list"><p><strong>Return address:</strong> {alignmentLabel(report.authentication.return_path_alignment)}</p><p><strong>SPF match:</strong> {alignmentLabel(report.authentication.spf_alignment)}</p><p><strong>DKIM match:</strong> {alignmentLabel(report.authentication.dkim_alignment)}</p><p className="muted-copy">A match means the domains share the same main domain. This uses a short list of common domain endings.</p></div>
+        <div className="alignment-list"><p><strong>Return address:</strong> {alignmentLabel(report.authentication.return_path_alignment)}</p><p><strong>SPF match:</strong> {alignmentLabel(report.authentication.spf_alignment)}</p><p><strong>DKIM match:</strong> {alignmentLabel(report.authentication.dkim_alignment)}</p><p className="muted-copy">A match means the domains share the same registered domain.</p></div>
       </section>
 
       {report.enrichment.status !== "not_requested" && <section className="report-section"><SectionTitle number="IP" title="IP enrichment" count={report.enrichment.ip_results.length} />
         <p className="muted-copy">{report.enrichment.note}</p>{report.enrichment.ip_results.map((item) => {
           const location = [item.city, item.region, item.country].filter(Boolean).join(", ");
-          const network = item.organization || item.network;
+          const network = [item.organization || item.network, item.asn ? `AS${item.asn} ${item.asn_owner || ""}` : "", item.ptr_hostname ? `PTR ${item.ptr_hostname} · ${item.fcrdns}` : item.fcrdns ? `FCRDNS ${item.fcrdns}` : ""].filter(Boolean).join(" · ");
           const coordinates = item.latitude && item.longitude ? `${item.latitude}, ${item.longitude}${item.accuracy_radius_km ? ` · about ${item.accuracy_radius_km} km accuracy radius` : ""}` : "";
           return <div className="indicator-row" key={item.address}><span>{item.address}</span><code>{[location, network, coordinates, item.registry_error].filter(Boolean).join(" · ") || "No record found"}</code></div>;
         })}
@@ -260,7 +269,8 @@ function AnalysisReport({ report, onExport, onClear }: { report: AnalysisRespons
 
       <section className="report-section">
         <SectionTitle number="04" title="Links and files" count={report.url_indicators.length + report.attachments.length} />
-        {report.url_indicators.map((item) => <div className="indicator-row" key={item.evidence_ref}><span>LINK</span><code>{item.scheme}://{item.host}{item.path}{item.query ? `?${item.query}` : ""}{item.redirector ? " · click tracker; destination unknown" : ""}</code></div>)}
+        {report.unique_targets.length > 0 && <details className="simple-details"><summary>{report.unique_targets.length} grouped link target{report.unique_targets.length === 1 ? "" : "s"}</summary>{report.unique_targets.map((item) => <div className="indicator-row" key={`${item.host}${item.path}`}><span>TARGET · {item.evidence_refs.length} link{item.evidence_refs.length === 1 ? "" : "s"}</span><code>{item.host}{item.path}</code></div>)}</details>}
+        {report.url_indicators.map((item) => <div className="indicator-row" key={item.evidence_ref}><span>LINK{item.position ? ` ${item.position}` : ""}</span><code>{item.anchor_text ? `${item.anchor_text} → ` : ""}{item.scheme}://{item.host}{item.path}{item.query ? `?${item.query}` : ""}{item.button_link ? " · button" : item.image_link ? " · image" : ""}{item.redirector ? " · click tracker; destination unknown" : ""}{item.visible_text_mismatch ? " · visible URL mismatch" : ""}</code></div>)}
         {report.attachments.map((item, index) => <div className="indicator-row" key={`${item.filename}-${index}`}><span>FILE</span><code>{item.filename || "Unnamed file"}</code></div>)}
         {!report.url_indicators.length && !report.attachments.length && <p className="muted-copy">No link or file details were found.</p>}
       </section>
@@ -356,6 +366,8 @@ function findingCopy(finding: Finding): [string, string] {
     risky_attachment_extension: ["The attached file may be risky", "This file type can contain code. We did not open it."],
     credential_language_with_link: ["A password-related message includes a link", "The email mentions an account or password and includes a link."],
     link_uses_ip_address: ["A link points to a numbered address", "This link uses a number instead of a website name."],
+    link_visible_text_mismatch: ["Visible link text points somewhere else", "The address shown in the email differs from the link's actual destination."],
+    dkim_date_skew: ["The signature time does not match the email dates", "The DKIM signing time differs from the Date or earliest receiving server time by more than a day."],
     unencrypted_http_link: ["A link may not protect your information", "This link may not protect information sent between your device and the website."],
     display_name_address_mismatch: ["The sender name shows a different email address", "The name shown in the sender field contains an email address that does not match the actual sender address."],
     urgent_language_with_link: ["Urgent wording with a link", "The message pressures you to act and includes a link. Take a moment to check before clicking."],
@@ -367,7 +379,7 @@ function findingCopy(finding: Finding): [string, string] {
 }
 
 function simpleField(value: string) {
-  const labels: Record<string, string> = { From: "Sender", "Reply-To": "Reply address", Subject: "Subject", Received: "Mail path", "Authentication-Results": "Email security check", "Link destination host": "Link address", "Credential-related language": "Message text", "Attachment metadata": "File details" };
+  const labels: Record<string, string> = { From: "Sender", "Reply-To": "Reply address", Subject: "Subject", Received: "Mail path", "Authentication-Results": "Email security check", "Link URL": "Link address", "Credential-related language": "Message text", "Attachment metadata": "File details" };
   return labels[value] ?? value;
 }
 

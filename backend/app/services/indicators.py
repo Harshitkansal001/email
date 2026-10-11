@@ -21,13 +21,15 @@ def extract_indicators(parsed: ParsedEmail) -> tuple[list[UrlIndicator], list[Ip
     evidence: list[Evidence] = []
     limitations: list[str] = []
     seen_urls: set[tuple[str, str, str, str]] = set()
-    sources = [(parsed.body_text, True), *((link, False) for link in parsed.html_links)]
+    sources = [(parsed.body_text, None), *((link, link) for link in parsed.html_links)]
     url_limit_reached = False
 
-    for source, is_text in sources:
-        candidates = _URL.findall(source) if is_text else [source]
-        for candidate in candidates:
+    for source, html_link in sources:
+        candidates = [(_candidate, None) for _candidate in _URL.findall(source)] if html_link is None else [(html_link.url, html_link)]
+        for candidate, link in candidates:
             candidate = candidate.rstrip(_TRAILING_PUNCTUATION)
+            if link is None and any(item.anchor_text and item.anchor_text.strip() == candidate for item in parsed.html_links):
+                continue
             try:
                 parts = urlsplit(candidate)
                 host = parts.hostname
@@ -47,11 +49,16 @@ def extract_indicators(parsed: ParsedEmail) -> tuple[list[UrlIndicator], list[Ip
             ref = f"body:url:{len(urls) + 1}"
             seen_urls.add((scheme, normalized_host, path, query or ""))
             indicator = UrlIndicator(evidence_ref=ref, host=normalized_host, scheme=scheme, path=path, query=query,
-                                     redirector=any(normalized_host == item or normalized_host.endswith("." + item) for item in _REDIRECTORS))
+                                     redirector=any(normalized_host == item or normalized_host.endswith("." + item) for item in _REDIRECTORS),
+                                     position=link.position if link else None,
+                                     anchor_text=link.anchor_text if link else None,
+                                     image_link=link.image_link if link else False,
+                                     button_link=link.button_link if link else False,
+                                     visible_text_mismatch=bool(link and _visible_host(link.anchor_text) not in {None, normalized_host}))
             urls.append(indicator)
             evidence.append(Evidence(
                 evidence_ref=ref,
-                field="Link destination host",
+                field="Link URL",
                 value=f"{indicator.scheme}://{indicator.host}{indicator.path}{'?' + indicator.query if indicator.query else ''}",
                 source_type="email_body",
             ))
@@ -88,6 +95,18 @@ def _safe_query(query: str) -> str | None:
     safe = [(key, "[redacted]" if _SENSITIVE_QUERY.search(key) or _EMAIL.search(value) or _OPAQUE_PATH.fullmatch(value) else value)
             for key, value in pairs]
     return urlencode(safe, doseq=True)[:2048]
+
+
+def _visible_host(text: str | None) -> str | None:
+    if not text:
+        return None
+    value = text.strip()
+    try:
+        parsed = urlsplit(value if "://" in value else "//" + value)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    return host.lower() if host and ("." in host or "://" in value) else None
 
 
 def ip_category(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:

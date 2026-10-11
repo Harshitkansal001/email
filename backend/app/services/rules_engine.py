@@ -14,6 +14,7 @@ _CREDENTIAL_LANGUAGE = re.compile(
 _RISKY_EXTENSIONS = {".exe", ".scr", ".js", ".jse", ".vbs", ".vbe", ".hta", ".lnk", ".iso", ".xlsm", ".docm"}
 _URGENCY = re.compile(r"\b(?:urgent|immediately|act now|final notice|within \d+ hours?|account (?:will be )?suspended|last chance)\b", re.IGNORECASE)
 _EPOCH_TOKEN = re.compile(r"(?:^|\D)(1[5-9]\d{8}|2\d{9})(?:\D|$)")
+_DKIM_TIME = re.compile(r"(?:^|;)\s*t\s*=\s*(\d+)\b", re.IGNORECASE)
 _KNOWN_MAIL_HOSTS = ("google.com", "googlemail.com", "outlook.com", "protection.outlook.com", "amazonses.com", "hubspot.com", "hubspotlinks.com", "mailchimp.com")
 
 
@@ -97,6 +98,14 @@ def evaluate_rules(
             "link_uses_ip_address", "Link uses an IP address", "A link destination uses an IP address instead of a hostname.", "medium", [indicator.evidence_ref],
         ))
 
+    mismatched_links = [item for item in url_indicators if item.visible_text_mismatch]
+    if mismatched_links:
+        findings.append(_finding(
+            "link_visible_text_mismatch", "Visible link text points somewhere else",
+            "A link displays a different website address from its actual destination.", "medium",
+            [item.evidence_ref for item in mismatched_links],
+        ))
+
     http_urls = [url for url in url_indicators if url.scheme == "http"]
     if http_urls:
         findings.append(_finding(
@@ -116,15 +125,20 @@ def evaluate_rules(
         risk_level = "undetermined"
     benign = []
     if authentication.dmarc == "pass" and (authentication.spf_alignment == "aligned" or authentication.dkim_alignment == "aligned"):
-        benign.append("The message reports a DMARC pass and an aligned sender domain. Authentication headers can be forged.")
+        benign.append("DMARC pass is supported by an aligned DKIM signature." if authentication.dkim_alignment == "aligned" else "DMARC pass is supported by aligned SPF.")
     auth_text = " ".join(value for _, value in headers.get("authentication-results", []))
     if authentication.dmarc == "pass" and re.search(r"\b(?:p|policy)\s*[.=]\s*reject\b", auth_text, re.IGNORECASE):
         benign.append("The message reports DMARC pass under a reject policy. This policy detail comes from the unverified message header.")
     if timeline_signal:
         benign.append("The Date header and earliest Received time are close together. This is a positive signal, not proof of safety.")
-    route_text = " ".join(value.lower() for _, name, value in parsed.headers if name.casefold() == "received")
-    if any(re.search(r"(?<![\w.-])(?:[\w-]+\.)*" + re.escape(host) + r"(?=[\s;)]|$)", route_text) for host in _KNOWN_MAIL_HOSTS):
-        benign.append("A recognized email-service host appears in the route. Legitimate services can also carry malicious mail.")
+    service_host = lambda host: any(host == service or host.endswith("." + service) for service in _KNOWN_MAIL_HOSTS)
+    matched_sources = []
+    if any(service_host(item.host) for item in url_indicators):
+        matched_sources.append("link URLs")
+    if any(service_host(domain) for domain in authentication.dkim_domains):
+        matched_sources.append("DKIM signing domains")
+    if matched_sources:
+        benign.append(f"Recognized email-service hosts appear in {' and '.join(matched_sources)}. Legitimate services can also carry malicious mail.")
     return findings, classification, risk_level, benign
 
 
@@ -153,22 +167,35 @@ def _timeline(parsed: ParsedEmail):
             refs.append(ref)
         except (TypeError, ValueError, OverflowError):
             continue
+    date_ref = next((ref for ref, name, _ in parsed.headers if name.casefold() == "date"), "")
+    message_id_ref = next((ref for ref, name, _ in parsed.headers if name.casefold() == "message-id"), "")
+    received_earliest = min(received) if received else None
+    received_ref = refs[received.index(received_earliest)] if received_earliest else ""
     # Only treat a clearly separated 10-digit Unix timestamp in Message-ID as an epoch.
     msg_id = values.get("message-id", "")
     epoch_match = _EPOCH_TOKEN.search(msg_id)
     if epoch_match:
         try:
             from_epoch = datetime.fromtimestamp(int(epoch_match.group(1)), timezone.utc)
-            if sent and abs((sent - from_epoch).total_seconds()) > 86400:
-                refs.append(next((ref for ref, name, _ in parsed.headers if name.casefold() == "message-id"), ""))
-                findings.append(_finding("message_id_date_skew", "Message ID timestamp differs from Date", "A clear 10-digit timestamp in Message-ID differs from the Date header by more than 24 hours. Message-ID formats are not standardized for this purpose.", "low", [refs[-1], next((ref for ref, name, _ in parsed.headers if name.casefold() == "date"), "")]))
+            if any(moment and abs((moment - from_epoch).total_seconds()) > 86400 for moment in (sent, received_earliest)):
+                findings.append(_finding("message_id_date_skew", "Message ID timestamp differs from message dates", "A clear 10-digit timestamp in Message-ID differs from the Date or earliest Received time by more than 24 hours. Message-ID formats are not standardized for this purpose.", "low", [message_id_ref, date_ref, received_ref]))
         except (OverflowError, OSError, ValueError):
             pass
-    if not sent or not received:
+    for ref, name, value in parsed.headers:
+        if name.casefold() != "dkim-signature":
+            continue
+        timestamp = _DKIM_TIME.search(value)
+        if not timestamp:
+            continue
+        try:
+            signed = datetime.fromtimestamp(int(timestamp.group(1)), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            continue
+        if any(moment and abs((moment - signed).total_seconds()) > 86400 for moment in (sent, received_earliest)):
+            findings.append(_finding("dkim_date_skew", "DKIM timestamp differs from message dates", "The DKIM signature timestamp differs from the Date or earliest Received time by more than 24 hours.", "low", [ref, date_ref, received_ref]))
+    if not sent or not received_earliest:
         return findings, False
-    delta = (min(received) - sent).total_seconds()
-    date_ref = next((ref for ref, name, _ in parsed.headers if name.casefold() == "date"), "")
-    received_ref = refs[received.index(min(received))]
+    delta = (received_earliest - sent).total_seconds()
     if abs(delta) > 86400:
         findings.append(_finding("date_received_skew", "Email dates are more than a day apart", "The Date header and earliest Received timestamp differ by over 24 hours. Check sender clock settings and the message's origin.", "low", [date_ref, received_ref]))
     return findings, abs(delta) <= 600

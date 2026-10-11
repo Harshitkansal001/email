@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/analyze", tags=["analysis"])
         }
     },
 )
-async def analyze_file(request: Request, enrich_ips: bool = Query(False)) -> AnalysisResponse:
+async def analyze_file(request: Request, enrich_ips: bool = Query(False), verify_rdns: bool = Query(False)) -> AnalysisResponse:
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if content_type not in {"application/octet-stream", "message/rfc822"}:
         raise HTTPException(
@@ -28,7 +28,7 @@ async def analyze_file(request: Request, enrich_ips: bool = Query(False)) -> Ana
         )
     raw = await request.body()
     try:
-        return await run_in_threadpool(analyze_message, raw, "eml", enrich_ips)
+        return await run_in_threadpool(analyze_message, raw, "eml", enrich_ips, verify_rdns)
     except MessageInputError as error:
         raise HTTPException(status_code=error.status_code, detail={"code": error.code, "message": error.message}) from None
 
@@ -42,6 +42,6 @@ async def analyze_headers(body: HeaderAnalysisRequest) -> AnalysisResponse:
                 status_code=413,
                 detail={"code": "headers_too_large", "message": "Header text exceeds the 64 KiB limit."},
             )
-        return await run_in_threadpool(analyze_message, raw, "headers", body.enrich_ips)
+        return await run_in_threadpool(analyze_message, raw, "headers", body.enrich_ips, body.verify_rdns)
     except MessageInputError as error:
         raise HTTPException(status_code=error.status_code, detail={"code": error.code, "message": error.message}) from None

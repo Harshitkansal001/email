@@ -122,6 +122,88 @@ def test_authentication_alignment_and_url_privacy(client):
     assert "spring" in (link["query"] or "")
 
 
+def test_signature_domains_and_spf_alignment_use_their_message_headers(client):
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: analyst@544893m.gitkraken.com\r\n"
+        b"Return-Path: <bounce@544893m.gitkraken.com>\r\n"
+        b"Authentication-Results: mx; spf=pass; dkim=pass; dmarc=pass header.from=544893m.gitkraken.com\r\n"
+        b"DKIM-Signature: v=1; a=rsa-sha256; d=544893m.gitkraken.com;\r\n"
+        b"\ts=selector1; bh=abc\r\n"
+        b"DKIM-Signature: v=1; a=rsa-sha256; d=gitkraken.com; s=selector2; bh=def\r\n\r\n"
+    ), headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    auth = response.json()["authentication"]
+    assert auth["dkim_domains"] == ["544893m.gitkraken.com", "gitkraken.com"]
+    assert auth["return_path_alignment"] == auth["spf_alignment"] == "aligned"
+    assert auth["dkim_alignment"] == "aligned"
+    assert auth["alignment_note"] == ""
+
+
+def test_imprecise_city_database_location_only_returns_country():
+    from app.services.ip_enrichment import _city_fields
+
+    assert _city_fields({
+        "country": {"iso_code": "US"},
+        "city": {"names": {"en": "Centroid"}},
+        "location": {"latitude": 37.751, "longitude": -97.822, "accuracy_radius": 1000},
+    }) == {"country": "US"}
+
+
+def test_asn_data_and_forward_confirmed_reverse_dns(monkeypatch):
+    import socket
+    from app.services import ip_enrichment
+
+    assert ip_enrichment._asn_fields({"autonomous_system_number": 123, "autonomous_system_organization": "Example ISP"}) == {
+        "asn": "123", "asn_owner": "Example ISP",
+    }
+    monkeypatch.setattr(socket, "gethostbyaddr", lambda address: ("mx.example.org", [], [address]))
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port: [(None, None, None, None, ("139.180.17.170", 0))])
+    assert ip_enrichment._forward_confirmed_reverse_dns("139.180.17.170") == {
+        "ptr_hostname": "mx.example.org", "fcrdns": "confirmed",
+    }
+
+
+def test_duplicate_header_values_keep_all_evidence_refs(client):
+    response = client.post("/api/v1/analyze/headers", json={"raw_headers": (
+        "From: sender@example.org\r\n"
+        "Return-Path: <bounce@example.org>\r\n"
+        "Return-Path: <bounce@example.org>\r\n"
+    )})
+    assert response.status_code == 200
+    matches = [item for item in response.json()["evidence"] if item["field"] == "Return-Path"]
+    assert len(matches) == 1
+    assert matches[0]["evidence_refs"] == ["header:Return-Path:1", "header:Return-Path:2"]
+
+
+def test_urls_group_by_host_and_path_and_html_link_context_is_reported(client):
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: analyst@example.org\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+        b"<a class=\"button\" href=\"https://redirect.example/a?x=1\">https://trusted.example/path</a>"
+        b"<a href=\"https://redirect.example/b?x=2\"><img src=\"https://img.example/button.png\"></a>"
+    ), headers={"Content-Type": "application/octet-stream"})
+    assert response.status_code == 200
+    report = response.json()
+    assert len(report["unique_targets"]) == 2
+    first = report["url_indicators"][0]
+    assert first["button_link"] is True
+    assert first["visible_text_mismatch"] is True
+    assert first["position"] == 1
+    assert report["url_indicators"][1]["image_link"] is True
+    assert "link_visible_text_mismatch" in {item["rule_id"] for item in report["findings"]}
+
+
+def test_dkim_timestamp_is_compared_with_message_dates(client):
+    response = client.post("/api/v1/analyze/headers", json={"raw_headers": (
+        "From: sender@example.org\r\n"
+        "Date: Mon, 12 Oct 2026 10:00:00 +0000\r\n"
+        "Received: from relay.example.org by mx.example.org; Mon, 12 Oct 2026 10:05:00 +0000\r\n"
+        "DKIM-Signature: v=1; d=example.org; t=1790000000; s=selector\r\n"
+    )})
+    assert response.status_code == 200
+    assert "dkim_date_skew" in {item["rule_id"] for item in response.json()["findings"]}
+
+
 def test_enrichment_is_opt_in_and_uses_public_registry_data(monkeypatch):
     from ipaddress import ip_network
     from app.services import ip_enrichment

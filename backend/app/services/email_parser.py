@@ -33,24 +33,52 @@ class _HtmlText(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.text: list[str] = []
-        self.links: list[str] = []
+        self.links: list[HtmlLink] = []
+        self._active_link: dict | None = None
         self._skip_depth = 0
 
     def handle_starttag(self, tag, attrs):
         if tag.lower() in {"script", "style"}:
             self._skip_depth += 1
-        if tag.lower() in {"a", "img"}:
-            for name, value in attrs:
-                if name.lower() in {"href", "src"} and value:
-                    self.links.append(value[:2_048])
+        attributes = {name.lower(): value for name, value in attrs}
+        if tag.lower() in {"a", "button"} and attributes.get("href"):
+            classes = set((attributes.get("class") or "").lower().split())
+            self._active_link = {
+                "url": attributes["href"][:2_048], "text": [], "image": False,
+                "button": tag.lower() == "button" or attributes.get("role") == "button" or bool(classes & {"btn", "button"}),
+            }
+        if tag.lower() == "img" and attributes.get("src"):
+            if self._active_link is not None:
+                self._active_link["image"] = True
+            else:
+                self.links.append(HtmlLink(url=attributes["src"][:2_048], position=len(self.links) + 1, image_link=True))
 
     def handle_endtag(self, tag):
+        if tag.lower() in {"a", "button"} and self._active_link is not None:
+            link = self._active_link
+            self.links.append(HtmlLink(
+                url=link["url"], position=len(self.links) + 1,
+                anchor_text=" ".join(" ".join(link["text"]).split())[:256] or None,
+                image_link=link["image"], button_link=link["button"],
+            ))
+            self._active_link = None
         if tag.lower() in {"script", "style"} and self._skip_depth:
             self._skip_depth -= 1
 
     def handle_data(self, data):
         if not self._skip_depth:
             self.text.append(data)
+            if self._active_link is not None:
+                self._active_link["text"].append(data)
+
+
+@dataclass
+class HtmlLink:
+    url: str
+    position: int
+    anchor_text: str | None = None
+    image_link: bool = False
+    button_link: bool = False
 
 
 @dataclass
@@ -58,7 +86,7 @@ class ParsedEmail:
     input_type: str
     headers: list[tuple[str, str, str]]
     body_text: str
-    html_links: list[str]
+    html_links: list[HtmlLink]
     attachments: list[AttachmentMetadata]
     limitations: list[str]
 
@@ -108,7 +136,7 @@ def parse_email(raw: bytes, input_type: str) -> ParsedEmail:
 
     attachments: list[AttachmentMetadata] = []
     body_chunks: list[str] = []
-    html_links: list[str] = []
+    html_links: list[HtmlLink] = []
     body_length = 0
     part_count = 0
     stack = [(message, 0)]

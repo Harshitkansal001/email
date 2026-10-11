@@ -11,10 +11,12 @@ AuthStatus = Literal[
 class HeaderAnalysisRequest(BaseModel):
     raw_headers: str = Field(min_length=1, max_length=65_536)
     enrich_ips: bool = False
+    verify_rdns: bool = False
 
 
 class Evidence(BaseModel):
     evidence_ref: str
+    evidence_refs: list[str] = Field(default_factory=list)
     field: str
     value: str
     source_type: Literal["email_header", "email_body", "attachment_metadata"]
@@ -72,6 +74,17 @@ class UrlIndicator(BaseModel):
     path: str
     query: str | None = None
     redirector: bool = False
+    position: int | None = None
+    anchor_text: str | None = None
+    image_link: bool = False
+    button_link: bool = False
+    visible_text_mismatch: bool = False
+
+
+class UniqueTarget(BaseModel):
+    host: str
+    path: str
+    evidence_refs: list[str]
 
 
 class IpIndicator(BaseModel):
@@ -103,6 +116,7 @@ class AnalysisResponse(BaseModel):
     evidence: list[Evidence]
     attachments: list[AttachmentMetadata]
     url_indicators: list[UrlIndicator]
+    unique_targets: list[UniqueTarget] = Field(default_factory=list)
     ip_indicators: list[IpIndicator]
     authentication: AuthenticationResults
     routing: Routing

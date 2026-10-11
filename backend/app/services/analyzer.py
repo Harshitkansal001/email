@@ -1,7 +1,7 @@
 import ipaddress
 from datetime import datetime, timezone
 
-from app.schemas.analysis import AnalysisResponse, Evidence, IpIndicator
+from app.schemas.analysis import AnalysisResponse, Evidence, IpIndicator, UniqueTarget
 from app.services.email_parser import parse_email
 from app.services.header_trace import analyze_authentication, analyze_routing
 from app.services.indicators import extract_indicators, ip_category
@@ -10,12 +10,18 @@ from app.services.ml_classifier import classify
 from app.services.rules_engine import evaluate_rules
 
 
-def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False) -> AnalysisResponse:
+def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False, verify_rdns: bool = False) -> AnalysisResponse:
     parsed = parse_email(raw, input_type)
-    evidence = [
-        Evidence(evidence_ref=ref, field=name, value=value, source_type="email_header")
-        for ref, name, value in parsed.headers
-    ]
+    header_evidence: dict[tuple[str, str], Evidence] = {}
+    for ref, name, value in parsed.headers:
+        item = header_evidence.get((name.casefold(), value))
+        if item:
+            item.evidence_refs.append(ref)
+        else:
+            header_evidence[(name.casefold(), value)] = Evidence(
+                evidence_ref=ref, evidence_refs=[ref], field=name, value=value, source_type="email_header",
+            )
+    evidence = list(header_evidence.values())
     evidence.extend(
         Evidence(
             evidence_ref=f"attachment:{index}",
@@ -29,6 +35,10 @@ def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False) -> An
     authentication = analyze_authentication(parsed)
     routing, route_ips = analyze_routing(parsed)
     urls, ip_indicators, link_evidence, indicator_limitations = extract_indicators(parsed)
+    targets: dict[tuple[str, str], list[str]] = {}
+    for item in urls:
+        targets.setdefault((item.host, item.path), []).append(item.evidence_ref)
+    unique_targets = [UniqueTarget(host=host, path=path, evidence_refs=refs) for (host, path), refs in targets.items()]
     ip_refs = {item.address: set(item.evidence_refs) for item in ip_indicators}
     for address, ref in route_ips:
         ip_refs.setdefault(address, set()).add(ref)
@@ -69,6 +79,7 @@ def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False) -> An
         authentication=authentication,
         routing=routing,
         classifier=classify(parsed.body_text),
-        enrichment=enrich_public_ips(ip_indicators, enrich_ips),
+        enrichment=enrich_public_ips(ip_indicators, enrich_ips, verify_rdns),
+        unique_targets=unique_targets,
         limitations=list(dict.fromkeys(limitations)),
     )
