@@ -16,6 +16,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [enrichIps, setEnrichIps] = useState(false);
+  const scanCommand = inputMode === "file" ? `scan --file ${file?.name ?? "[select .eml]"}` : "scan --headers <stdin>";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -45,16 +46,22 @@ export default function App() {
     event.preventDefault();
     clearAnalysis();
     setAnalyzing(true);
+    const startedAt = performance.now();
     try {
+      let nextReport: AnalysisResponse;
       if (inputMode === "file") {
         if (!file) throw new Error("Choose an .eml file first.");
         if (!file.name.toLowerCase().endsWith(".eml")) throw new Error("Choose a file with the .eml extension.");
         if (file.size > MAX_FILE_BYTES) throw new Error("The .eml file must be 5 MB or smaller.");
-        setReport(await analyzeFile(file, enrichIps));
+        nextReport = await analyzeFile(file, enrichIps);
       } else {
         if (!rawHeaders.trim()) throw new Error("Paste raw email headers first.");
-        setReport(await analyzeHeaders(rawHeaders, enrichIps));
+        nextReport = await analyzeHeaders(rawHeaders, enrichIps);
       }
+      // Keep the command log readable before replacing it with a fast result.
+      const logDuration = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 2200;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.max(0, logDuration - (performance.now() - startedAt))));
+      setReport(nextReport);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The analysis request failed.");
     } finally {
@@ -91,9 +98,9 @@ export default function App() {
 
       <section className="workspace-heading">
         <div>
-          <p className="eyebrow">CHECK AN EMAIL</p>
-          <h1>Find warning signs<br /><span>before you reply.</span></h1>
-          <p className="lede">See why an email may need a closer look. Links and files are never opened.</p>
+          <p className="eyebrow">LOCAL EMAIL FORENSICS</p>
+          <h1><span className="terminal-prompt" aria-hidden="true">$ </span>mailguard <span className="command-verb">scan</span></h1>
+          <p className="lede">Inspect a saved email or its headers. Links and files are never opened.</p>
         </div>
         <div className="privacy-note"><span className="privacy-mark" aria-hidden="true">●</span><span>PRIVATE SESSION<br /><small>Your email is not saved.</small></span></div>
       </section>
@@ -104,6 +111,7 @@ export default function App() {
             <span className="eyebrow">CHECK ANOTHER EMAIL</span>
             <span className="size-note">{inputMode === "file" ? "MAX 5 MB" : "MAX 64 KB"}</span>
           </div>
+          <div className="command-line"><span className="cmd-prompt">C:\mailguard&gt;</span><code>{scanCommand}</code></div>
           <div className="mode-switch" role="group" aria-label="Input type">
             <button type="button" aria-pressed={inputMode === "file"} className={inputMode === "file" ? "selected" : ""} onClick={() => { setInputMode("file"); clearAnalysis(); }}>EMAIL FILE</button>
             <button type="button" aria-pressed={inputMode === "headers"} className={inputMode === "headers" ? "selected" : ""} onClick={() => { setInputMode("headers"); clearAnalysis(); }}>PASTE HEADERS</button>
@@ -138,7 +146,7 @@ export default function App() {
 
           {error && <p className="form-error" role="alert">{error}</p>}
           <button className="primary-button" type="submit" disabled={analyzing || apiState !== "online"}>
-            {analyzing ? "CHECKING…" : "CHECK EMAIL"}<span aria-hidden="true">↗</span>
+            {analyzing ? "RUNNING…" : "RUN ANALYSIS"}<span aria-hidden="true">↵</span>
           </button>
           <p className="safe-note">Links are inspected as text. Attachments are never opened.</p>
           <label className="enrichment-choice"><input type="checkbox" checked={enrichIps} onChange={(event) => setEnrichIps(event.target.checked)} />
@@ -146,7 +154,7 @@ export default function App() {
           </label>
         </form>
 
-        {report ? <AnalysisReport report={report} onExport={exportReport} onClear={clearAnalysis} /> : <EmptyReport apiState={apiState} />}
+        {report ? <AnalysisReport report={report} onExport={exportReport} onClear={clearAnalysis} /> : <EmptyReport apiState={apiState} analyzing={analyzing} command={scanCommand} />}
       </section>
 
       <footer className="page-footer">
@@ -157,14 +165,24 @@ export default function App() {
   );
 }
 
-function EmptyReport({ apiState }: { apiState: ApiState }) {
+function EmptyReport({ apiState, analyzing, command }: { apiState: ApiState; analyzing: boolean; command: string }) {
   return (
-    <section className="results-panel empty-state" aria-live="polite">
-      <div className="empty-symbol" aria-hidden="true">⌁</div>
-      <p className="eyebrow">ANALYSIS REPORT</p>
-      <h2>{apiState === "online" ? "Your results will appear here." : "The analysis service is offline."}</h2>
-      <p>Choose an email or paste its header information to see any warning signs.</p>
-      <div className="empty-footnote">WARNINGS INCLUDE A SHORT EXPLANATION</div>
+    <section className={`results-panel empty-state${analyzing ? " is-processing" : ""}`} aria-live="polite">
+      <p className="eyebrow">{analyzing ? "PROCESS OUTPUT" : "ANALYSIS REPORT"}</p>
+      {analyzing ? (
+        <div className="process-output">
+          <p className="process-command"><span className="cmd-prompt">C:\mailguard&gt;</span> {command}</p>
+          <p className="process-line"><span className="output-tag">[OK]</span> Input accepted</p>
+          <p className="process-line"><span className="output-tag">[RUN]</span> Analyzing sender, links, and mail path</p>
+          <p className="process-line processing-line"><span className="output-tag">[WAIT]</span> Waiting for analysis report<span className="terminal-cursor" aria-hidden="true">_</span></p>
+        </div>
+      ) : (
+        <>
+          <h2>{apiState === "online" ? "Waiting for input." : "The analysis service is offline."}</h2>
+          <p>{apiState === "online" ? "Select an .eml file or paste email headers, then run the analysis command." : "Reconnect the analysis service before running a command."}</p>
+          <div className="empty-footnote">OUTPUT WILL APPEAR HERE</div>
+        </>
+      )}
     </section>
   );
 }
