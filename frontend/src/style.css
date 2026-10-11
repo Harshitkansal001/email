@@ -1,0 +1,50 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
+
+:root {
+  font-family: "DM Sans", sans-serif;
+  color: #20251f;
+  background: #f5f4f0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 320px; min-height: 100vh; margin: 0; }
+.shell { width: min(1120px, calc(100% - 64px)); min-height: 100vh; margin: auto; display: flex; flex-direction: column; }
+.topbar { height: 82px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #deded5; }
+.wordmark { display: flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; font: 500 11px "DM Mono", monospace; letter-spacing: .08em; }
+.mark { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; background: #203c31; color: #f7f5ed; font-size: 10px; letter-spacing: 0; }
+.wordmark-muted { color: #8b8e83; }
+.connection, .eyebrow, .card-index, .capabilities, footer { font-family: "DM Mono", monospace; letter-spacing: .08em; }
+.connection { display: flex; align-items: center; gap: 8px; color: #777c71; font-size: 10px; }
+.connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #b7a56e; }
+.connection-online { color: #47765a; }
+.connection-online .connection-dot { background: #4d9b67; }
+.connection-offline { color: #a3483d; }
+.connection-offline .connection-dot { background: #c55649; }
+.intro { padding: clamp(88px, 14vh, 150px) 0 72px; max-width: 770px; }
+.eyebrow { color: #66806c; font-size: 10px; margin: 0 0 24px; }
+h1 { margin: 0; font: 600 clamp(42px, 7vw, 76px)/1.02 "Manrope", sans-serif; letter-spacing: -.065em; }
+h1 span { color: #8f998e; }
+.lede { max-width: 520px; margin: 28px 0 0; color: #6d726b; font-size: 16px; line-height: 1.7; }
+.setup-card { display: grid; grid-template-columns: 130px 1fr auto; align-items: center; gap: 30px; padding: 30px 32px; border: 1px solid #deded5; background: #faf9f6; }
+.card-index { align-self: start; padding-top: 6px; color: #9a9e92; font-size: 9px; }
+h2 { margin: 0 0 8px; font: 600 18px "Manrope", sans-serif; letter-spacing: -.02em; }
+.setup-card p { margin: 0; color: #777c73; font-size: 14px; }
+.capabilities { display: flex; flex-direction: column; gap: 8px; color: #6d766b; font-size: 9px; }
+.capabilities span::before { content: "+"; margin-right: 8px; color: #729178; }
+footer { display: flex; justify-content: space-between; gap: 16px; margin-top: auto; padding: 26px 0; color: #96988e; font-size: 9px; }
+footer span:first-child { color: #577360; }
+@media (max-width: 650px) {
+  .shell { width: min(100% - 36px, 520px); }
+  .topbar { height: 70px; }
+  .wordmark { font-size: 9px; }
+  .connection { font-size: 8px; }
+  .intro { padding: 90px 0 50px; }
+  .setup-card { grid-template-columns: 1fr; gap: 16px; padding: 24px; }
+  .capabilities { flex-direction: row; flex-wrap: wrap; margin-top: 4px; }
+  footer { flex-direction: column; }
+}
