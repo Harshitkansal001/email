@@ -35,7 +35,9 @@ def enrich_public_ips(indicators: list[IpIndicator], requested: bool, verify_rdn
 
     database = _city_database_path()
     asn_database = _asn_database_path()
-    results: dict[str, dict[str, str]] = {address: {"address": address} for address in public}
+    results: dict[str, dict[str, str | None]] = {
+        address: {"address": address, "country": None} for address in public
+    }
     local_available = False
     local_error = False
     if database.is_file():
@@ -88,8 +90,12 @@ def enrich_public_ips(indicators: list[IpIndicator], requested: bool, verify_rdn
             result = _get_json(base.rstrip("/") + "/ip/" + value)
             if not isinstance(result, dict):
                 raise ValueError("Invalid registry response")
-            results[value].update({"network": str(result.get("name", ""))[:200],
-                                   "organization": _organization(result)[:200], "country": str(result.get("country", ""))[:2]})
+            country = result.get("country")
+            results[value].update({
+                "network": str(result.get("name", ""))[:200],
+                "organization": _organization(result)[:200],
+                "country": country[:2] if isinstance(country, str) and country else None,
+            })
         except (OSError, HTTPException, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
             results[value]["registry_error"] = "Registry lookup unavailable"
     failures = sum("registry_error" in item for item in results.values())
@@ -137,22 +143,25 @@ def _forward_confirmed_reverse_dns(address: str) -> dict[str, str]:
         return {"fcrdns": "unavailable"}
 
 
-def _city_fields(record: dict) -> dict[str, str]:
+def _city_fields(record: dict) -> dict[str, str | None]:
     country = record.get("country", {}).get("iso_code") or record.get("registered_country", {}).get("iso_code")
     region = next((item.get("names", {}).get("en") for item in record.get("subdivisions", []) if item.get("names", {}).get("en")), "")
     city = record.get("city", {}).get("names", {}).get("en", "")
     location = record.get("location", {})
     accuracy = location.get("accuracy_radius")
     if accuracy is not None and accuracy >= 500:
-        return {"country": str(country)} if country else {}
-    return {key: str(value) for key, value in {
-        "country": country,
-        "region": region,
-        "city": city,
-        "latitude": location.get("latitude"),
-        "longitude": location.get("longitude"),
-        "accuracy_radius_km": location.get("accuracy_radius"),
-    }.items() if value is not None and value != ""}
+        return {"country": str(country) if country else None}
+    result: dict[str, str | None] = {
+        "country": str(country) if country else None,
+        **{key: str(value) for key, value in {
+            "region": region,
+            "city": city,
+            "latitude": location.get("latitude"),
+            "longitude": location.get("longitude"),
+            "accuracy_radius_km": location.get("accuracy_radius"),
+        }.items() if value is not None and value != ""},
+    }
+    return result
 
 
 @lru_cache(maxsize=2)

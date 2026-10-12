@@ -50,7 +50,7 @@ class AuthenticationResults(BaseModel):
     dkim_domains: list[str] = Field(default_factory=list)
     spf_alignment: Literal["aligned", "not_aligned", "unknown"] = "unknown"
     dkim_alignment: Literal["aligned", "not_aligned", "unknown"] = "unknown"
-    alignment_note: str = ""
+    alignment_note: str | None = None
 
 
 class RouteHop(BaseModel):
@@ -75,10 +75,21 @@ class UrlIndicator(BaseModel):
     query: str | None = None
     redirector: bool = False
     position: int | None = None
+    source_part: Literal["text/plain", "text/html"]
     anchor_text: str | None = None
     image_link: bool = False
     button_link: bool = False
-    visible_text_mismatch: bool = False
+    visible_text_mismatch: bool | None = None
+
+
+class RemoteImage(BaseModel):
+    evidence_ref: str
+    host: str
+    scheme: Literal["http", "https"]
+    path: str
+    query: str | None = None
+    position: int
+    source_part: Literal["text/html"] = "text/html"
 
 
 class UniqueTarget(BaseModel):
@@ -101,7 +112,7 @@ class ClassifierOutput(BaseModel):
 
 class EnrichmentOutput(BaseModel):
     status: Literal["not_requested", "not_configured", "complete", "partial", "unavailable"]
-    ip_results: list[dict[str, str]] = Field(default_factory=list)
+    ip_results: list[dict[str, str | None]] = Field(default_factory=list)
     note: str
 
 
@@ -116,6 +127,7 @@ class AnalysisResponse(BaseModel):
     evidence: list[Evidence]
     attachments: list[AttachmentMetadata]
     url_indicators: list[UrlIndicator]
+    remote_images: list[RemoteImage] = Field(default_factory=list)
     unique_targets: list[UniqueTarget] = Field(default_factory=list)
     ip_indicators: list[IpIndicator]
     authentication: AuthenticationResults

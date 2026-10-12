@@ -108,6 +108,7 @@ def test_authentication_alignment_and_url_privacy(client):
         b"From: Example Team <person@example.com>\r\n"
         b"Return-Path: <bounce@example.com>\r\n"
         b"Authentication-Results: mx; spf=pass smtp.mailfrom=bounce@example.com; dkim=pass header.d=example.com; dmarc=pass header.from=example.com\r\n"
+        b"DKIM-Signature: v=1; d=example.com; s=selector1; bh=abc\r\n"
         b"Content-Type: text/plain\r\n\r\n"
         b"https://hubspotlinks.com/redirect/abcdefghijklmnopqrstuvwx?email=person@example.com&token=secret&campaign=spring\n"
     ), headers={"Content-Type": "application/octet-stream"})
@@ -126,7 +127,8 @@ def test_signature_domains_and_spf_alignment_use_their_message_headers(client):
     response = client.post("/api/v1/analyze/file", content=(
         b"From: analyst@544893m.gitkraken.com\r\n"
         b"Return-Path: <bounce@544893m.gitkraken.com>\r\n"
-        b"Authentication-Results: mx; spf=pass; dkim=pass; dmarc=pass header.from=544893m.gitkraken.com\r\n"
+        b"Authentication-Results: mx; spf=pass; dkim=pass header.d=544893m.gitkraken.com; "
+        b"dkim=pass header.d=gitkraken.com; dmarc=pass header.from=544893m.gitkraken.com\r\n"
         b"DKIM-Signature: v=1; a=rsa-sha256; d=544893m.gitkraken.com;\r\n"
         b"\ts=selector1; bh=abc\r\n"
         b"DKIM-Signature: v=1; a=rsa-sha256; d=gitkraken.com; s=selector2; bh=def\r\n\r\n"
@@ -137,7 +139,7 @@ def test_signature_domains_and_spf_alignment_use_their_message_headers(client):
     assert auth["dkim_domains"] == ["544893m.gitkraken.com", "gitkraken.com"]
     assert auth["return_path_alignment"] == auth["spf_alignment"] == "aligned"
     assert auth["dkim_alignment"] == "aligned"
-    assert auth["alignment_note"] == ""
+    assert auth["alignment_note"] is None
 
 
 def test_imprecise_city_database_location_only_returns_country():
@@ -148,6 +150,12 @@ def test_imprecise_city_database_location_only_returns_country():
         "city": {"names": {"en": "Centroid"}},
         "location": {"latitude": 37.751, "longitude": -97.822, "accuracy_radius": 1000},
     }) == {"country": "US"}
+
+
+def test_missing_maxmind_country_is_null():
+    from app.services.ip_enrichment import _city_fields
+
+    assert _city_fields({"country": {}, "location": {}}) == {"country": None}
 
 
 def test_asn_data_and_forward_confirmed_reverse_dns(monkeypatch):
@@ -191,6 +199,97 @@ def test_urls_group_by_host_and_path_and_html_link_context_is_reported(client):
     assert first["position"] == 1
     assert report["url_indicators"][1]["image_link"] is True
     assert "link_visible_text_mismatch" in {item["rule_id"] for item in report["findings"]}
+
+
+def test_plain_text_urls_keep_part_provenance_and_unknown_anchor_state(client):
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: analyst@example.org\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        b"https://example.org/first\r\nhttps://example.org/second\r\n"
+    ), headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    report = response.json()
+    assert [item["source_part"] for item in report["url_indicators"]] == ["text/plain", "text/plain"]
+    assert all(item["position"] is None and item["anchor_text"] is None for item in report["url_indicators"])
+    assert all(item["visible_text_mismatch"] is None for item in report["url_indicators"])
+    for item in report["url_indicators"]:
+        matching_evidence = next(entry for entry in report["evidence"] if entry["evidence_ref"] == item["evidence_ref"])
+        assert matching_evidence["evidence_refs"] == [item["evidence_ref"]]
+
+
+def test_remote_images_are_reported_separately_with_evidence_refs(client):
+    images = b"".join(
+        f'<img src="https://hubspotemail.net/images/{index}.png">'.encode()
+        for index in range(1, 6)
+    )
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: analyst@example.org\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n\r\n" + images
+    ), headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    report = response.json()
+    assert len(report["remote_images"]) == 5
+    assert all(item["source_part"] == "text/html" for item in report["remote_images"])
+    assert all(
+        next(entry for entry in report["evidence"] if entry["evidence_ref"] == item["evidence_ref"])["evidence_refs"]
+        == [item["evidence_ref"]]
+        for item in report["remote_images"]
+    )
+
+
+def test_recipient_local_parts_and_verp_tokens_are_redacted_but_sender_addresses_remain(client):
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: sendername@gitkraken.com\r\n"
+        b"Reply-To: replyname@gitkraken.com\r\n"
+        b"Message-ID: <senderid-17abc3e@gitkraken.com>\r\n"
+        b"To: Recipient <26dcs008@nith.ac.in>\r\n"
+        b"Delivered-To: 26dcs008@nith.ac.in\r\n"
+        b"Return-Path: <1axbm2z-26dcs008=nith.ac.in@544893m.gitkraken.com>\r\n"
+        b"Authentication-Results: mx; spf=pass smtp.mailfrom=1axbm2z-26dcs008=nith.ac.in@544893m.gitkraken.com\r\n"
+        b"Received: from relay.example.org by mx.example.org for <26dcs008@nith.ac.in>; Tue, 12 Oct 2026 10:00:00 +0000\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"Message for recipient.\r\n"
+    ), headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    report = response.json()
+    serialized = response.text
+    assert "26dcs008" not in serialized
+    assert "1axbm2z" not in serialized
+    assert "sendername@gitkraken.com" in serialized
+    assert "replyname@gitkraken.com" in serialized
+    assert "senderid-17abc3e@gitkraken.com" in serialized
+    header_values = {item["field"]: item["value"] for item in report["evidence"]}
+    assert "[redacted]-[redacted]=nith.ac.in@544893m.gitkraken.com" in header_values["Return-Path"]
+    assert "[redacted]-[redacted]=nith.ac.in@544893m.gitkraken.com" in header_values["Authentication-Results"]
+
+
+def test_dkim_alignment_uses_only_domains_with_passing_signatures(client):
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: analyst@example.com\r\n"
+        b"Authentication-Results: mx; dkim=pass header.d=other.test; dkim=fail header.d=example.com\r\n"
+        b"DKIM-Signature: v=1; d=other.test; s=pass\r\n"
+        b"DKIM-Signature: v=1; d=example.com; s=fail\r\n\r\n"
+    ), headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    auth = response.json()["authentication"]
+    assert auth["dkim_domains"] == ["example.com", "other.test"]
+    assert auth["dkim_alignment"] == "not_aligned"
+
+
+def test_unqualified_dkim_result_does_not_apply_to_multiple_signatures(client):
+    response = client.post("/api/v1/analyze/file", content=(
+        b"From: analyst@example.com\r\n"
+        b"Authentication-Results: mx; dkim=pass\r\n"
+        b"DKIM-Signature: v=1; d=example.com; s=one\r\n"
+        b"DKIM-Signature: v=1; d=other.test; s=two\r\n\r\n"
+    ), headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    assert response.json()["authentication"]["dkim_alignment"] == "unknown"
 
 
 def test_dkim_timestamp_is_compared_with_message_dates(client):

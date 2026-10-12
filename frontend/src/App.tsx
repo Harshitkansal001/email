@@ -17,7 +17,6 @@ export default function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [enrichIps, setEnrichIps] = useState(false);
   const [verifyRdns, setVerifyRdns] = useState(false);
-  const [redactExport, setRedactExport] = useState(true);
   const scanCommand = inputMode === "file" ? `scan --file ${file?.name ?? "[select .eml]"}` : "scan --headers <stdin>";
 
   useEffect(() => {
@@ -73,10 +72,7 @@ export default function App() {
 
   function exportReport() {
     if (!report) return;
-    const blob = new Blob([`${JSON.stringify(report, (_key, value) => redactExport && typeof value === "string" ? value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, (address) => {
-      const [local, domain] = address.split("@");
-      return `${local.length <= 2 ? "***" : `${local.slice(0, 2)}***${local.slice(-2)}`}@${domain}`;
-    }) : value, 2)}\n`], { type: "application/json" });
+    const blob = new Blob([`${JSON.stringify(report, null, 2)}\n`], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -162,7 +158,7 @@ export default function App() {
           </label>
         </form>
 
-        {report ? <AnalysisReport report={report} onExport={exportReport} onClear={clearAnalysis} redactExport={redactExport} onRedactExportChange={setRedactExport} /> : <EmptyReport apiState={apiState} analyzing={analyzing} command={scanCommand} />}
+        {report ? <AnalysisReport report={report} onExport={exportReport} onClear={clearAnalysis} /> : <EmptyReport apiState={apiState} analyzing={analyzing} command={scanCommand} />}
       </section>
 
       <footer className="page-footer">
@@ -195,7 +191,7 @@ function EmptyReport({ apiState, analyzing, command }: { apiState: ApiState; ana
   );
 }
 
-function AnalysisReport({ report, onExport, onClear, redactExport, onRedactExportChange }: { report: AnalysisResponse; onExport: () => void; onClear: () => void; redactExport: boolean; onRedactExportChange: (value: boolean) => void }) {
+function AnalysisReport({ report, onExport, onClear }: { report: AnalysisResponse; onExport: () => void; onClear: () => void }) {
   const evidence = new Map(report.evidence.flatMap((item) => (item.evidence_refs?.length ? item.evidence_refs : [item.evidence_ref]).map((ref) => [ref, item] as const)));
   return (
     <section className="results-panel" aria-live="polite" aria-label="Analysis report">
@@ -205,7 +201,6 @@ function AnalysisReport({ report, onExport, onClear, redactExport, onRedactExpor
           <h2>Your results</h2>
         </div>
         <div className="report-actions">
-          <label><input type="checkbox" checked={redactExport} onChange={(event) => onRedactExportChange(event.target.checked)} /> Mask addresses in export</label>
           <button className="quiet-button" onClick={onExport}>Download report</button>
           <button className="quiet-button" onClick={onClear}>New analysis</button>
         </div>
@@ -268,11 +263,12 @@ function AnalysisReport({ report, onExport, onClear, redactExport, onRedactExpor
       </section>
 
       <section className="report-section">
-        <SectionTitle number="04" title="Links and files" count={report.url_indicators.length + report.attachments.length} />
+        <SectionTitle number="04" title="Links and files" count={report.url_indicators.length + report.remote_images.length + report.attachments.length} />
         {report.unique_targets.length > 0 && <details className="simple-details"><summary>{report.unique_targets.length} grouped link target{report.unique_targets.length === 1 ? "" : "s"}</summary>{report.unique_targets.map((item) => <div className="indicator-row" key={`${item.host}${item.path}`}><span>TARGET · {item.evidence_refs.length} link{item.evidence_refs.length === 1 ? "" : "s"}</span><code>{item.host}{item.path}</code></div>)}</details>}
-        {report.url_indicators.map((item) => <div className="indicator-row" key={item.evidence_ref}><span>LINK{item.position ? ` ${item.position}` : ""}</span><code>{item.anchor_text ? `${item.anchor_text} → ` : ""}{item.scheme}://{item.host}{item.path}{item.query ? `?${item.query}` : ""}{item.button_link ? " · button" : item.image_link ? " · image" : ""}{item.redirector ? " · click tracker; destination unknown" : ""}{item.visible_text_mismatch ? " · visible URL mismatch" : ""}</code></div>)}
+        {report.url_indicators.map((item) => <div className="indicator-row" key={item.evidence_ref}><span>LINK{item.position ? ` ${item.position}` : ""} · {item.source_part}</span><code>{item.anchor_text ? `${item.anchor_text} → ` : ""}{item.scheme}://{item.host}{item.path}{item.query ? `?${item.query}` : ""}{item.button_link ? " · button" : item.image_link ? " · image" : ""}{item.redirector ? " · click tracker; destination unknown" : ""}{item.visible_text_mismatch ? " · visible URL mismatch" : ""}</code></div>)}
+        {report.remote_images.map((item) => <div className="indicator-row" key={item.evidence_ref}><span>REMOTE IMAGE {item.position}</span><code>{item.scheme}://{item.host}{item.path}{item.query ? `?${item.query}` : ""}</code></div>)}
         {report.attachments.map((item, index) => <div className="indicator-row" key={`${item.filename}-${index}`}><span>FILE</span><code>{item.filename || "Unnamed file"}</code></div>)}
-        {!report.url_indicators.length && !report.attachments.length && <p className="muted-copy">No link or file details were found.</p>}
+        {!report.url_indicators.length && !report.remote_images.length && !report.attachments.length && <p className="muted-copy">No link or file details were found.</p>}
       </section>
 
       <section className="report-section">

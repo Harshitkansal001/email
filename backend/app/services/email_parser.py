@@ -15,7 +15,7 @@ MAX_BODY_TEXT_CHARS = 100_000
 MAX_EVIDENCE_VALUE_CHARS = 2_048
 
 _VISIBLE_HEADERS = {
-    "from", "to", "cc", "subject", "date", "reply-to", "return-path",
+    "from", "to", "cc", "delivered-to", "subject", "date", "reply-to", "return-path",
     "message-id", "received", "authentication-results", "dkim-signature",
 }
 _HEADER_LINE = re.compile(rb"(?m)^[!-9;-~]+:")
@@ -34,6 +34,7 @@ class _HtmlText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.text: list[str] = []
         self.links: list[HtmlLink] = []
+        self.images: list[HtmlImage] = []
         self._active_link: dict | None = None
         self._skip_depth = 0
 
@@ -50,8 +51,7 @@ class _HtmlText(HTMLParser):
         if tag.lower() == "img" and attributes.get("src"):
             if self._active_link is not None:
                 self._active_link["image"] = True
-            else:
-                self.links.append(HtmlLink(url=attributes["src"][:2_048], position=len(self.links) + 1, image_link=True))
+            self.images.append(HtmlImage(url=attributes["src"][:2_048], position=len(self.images) + 1))
 
     def handle_endtag(self, tag):
         if tag.lower() in {"a", "button"} and self._active_link is not None:
@@ -82,11 +82,19 @@ class HtmlLink:
 
 
 @dataclass
+class HtmlImage:
+    url: str
+    position: int
+
+
+@dataclass
 class ParsedEmail:
     input_type: str
     headers: list[tuple[str, str, str]]
     body_text: str
+    body_parts: list[tuple[str, str]]
     html_links: list[HtmlLink]
+    remote_images: list[HtmlImage]
     attachments: list[AttachmentMetadata]
     limitations: list[str]
 
@@ -136,7 +144,9 @@ def parse_email(raw: bytes, input_type: str) -> ParsedEmail:
 
     attachments: list[AttachmentMetadata] = []
     body_chunks: list[str] = []
+    body_parts: list[tuple[str, str]] = []
     html_links: list[HtmlLink] = []
+    remote_images: list[HtmlImage] = []
     body_length = 0
     part_count = 0
     stack = [(message, 0)]
@@ -187,10 +197,18 @@ def parse_email(raw: bytes, input_type: str) -> ParsedEmail:
                 html = _HtmlText()
                 html.feed(text)
                 html.close()
-                body_chunks.extend(html.text)
+                html_text = "\n".join(html.text)
+                body_chunks.append(html_text)
+                body_parts.append(("text/html", html_text))
+                for link in html.links:
+                    link.position += len(html_links)
+                for image in html.images:
+                    image.position += len(remote_images)
                 html_links.extend(html.links)
+                remote_images.extend(html.images)
             else:
                 body_chunks.append(text)
+                body_parts.append(("text/plain", text))
     except MessageInputError:
         raise
     except (RecursionError, ValueError, UnicodeError):
@@ -203,7 +221,9 @@ def parse_email(raw: bytes, input_type: str) -> ParsedEmail:
         input_type=input_type,
         headers=headers,
         body_text="\n".join(body_chunks),
+        body_parts=body_parts,
         html_links=html_links,
+        remote_images=remote_images,
         attachments=attachments,
         limitations=list(dict.fromkeys(limitations)),
     )

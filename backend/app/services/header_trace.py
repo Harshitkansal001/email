@@ -11,7 +11,9 @@ _AUTH_STATUS = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*(pass|fail|softfail|neutral
 _BRACKETED_IP = re.compile(r"\[([0-9A-Fa-f:.%]+)\]")
 _ROUTING_IP = re.compile(r"\b(?:from|by)\s+(\[[^\]]+\]|(?:\d{1,3}\.){3}\d{1,3})(?=\s|[;(]|$)", re.IGNORECASE)
 _DKIM_DOMAIN = re.compile(r"(?:^|;)\s*d\s*=\s*([^;\s]+)", re.IGNORECASE)
-_EXTRACT_DOMAIN = tldextract.TLDExtract(suffix_list_urls=None)
+_DKIM_RESULT = re.compile(r"(?:^|;)\s*dkim\s*=\s*([^\s;]+)([^;]*)", re.IGNORECASE)
+_AUTH_HEADER_DOMAIN = re.compile(r"\bheader\.d\s*=\s*([^\s;]+)", re.IGNORECASE)
+_EXTRACT_DOMAIN = tldextract.TLDExtract(suffix_list_urls=None, cache_dir=None)
 
 
 def analyze_authentication(parsed: ParsedEmail) -> AuthenticationResults:
@@ -28,16 +30,35 @@ def analyze_authentication(parsed: ParsedEmail) -> AuthenticationResults:
     from_address = _header_value(parsed, "from")
     from_domain = _domain(from_address)
     return_path_domain = _domain(_header_value(parsed, "return-path"))
-    dkim_domains = sorted({
-        normalized for ref, _, value in parsed.headers if ref.startswith("header:dkim-signature:")
+    signature_domains = [
+        normalized for _, name, value in parsed.headers if name.casefold() == "dkim-signature"
         for domain in _DKIM_DOMAIN.findall(re.sub(r"\s+", " ", value))
         if (normalized := _normalize_domain(domain))
-    })
+    ]
+    dkim_domains = sorted(set(signature_domains))
+    dkim_results: list[tuple[str, str | None]] = []
+    for _, value in headers:
+        for status, properties in _DKIM_RESULT.findall(value):
+            match = _AUTH_HEADER_DOMAIN.search(properties)
+            dkim_results.append((status.casefold(), match.group(1) if match else None))
+    passed_dkim_domains = {
+        normalized for status, domain in dkim_results
+        if status == "pass" and domain and (normalized := _normalize_domain(domain))
+    }
+    passed_dkim_domains.intersection_update(dkim_domains)
+    unqualified_results = [status for status, domain in dkim_results if domain is None]
+    if (
+        not passed_dkim_domains
+        and len(unqualified_results) == len(signature_domains)
+        and unqualified_results
+        and all(status == "pass" for status in unqualified_results)
+    ):
+        passed_dkim_domains.update(signature_domains)
     return_path_alignment = "unknown" if not from_domain or not return_path_domain else (
         "aligned" if _org_domain(from_domain) == _org_domain(return_path_domain) else "not_aligned"
     )
     spf_alignment = return_path_alignment if statuses["spf"] == "pass" else "not_aligned"
-    dkim_alignment = _alignment(statuses["dkim"], from_domain, dkim_domains)
+    dkim_alignment = _alignment(from_domain, sorted(passed_dkim_domains))
     return AuthenticationResults(
         **statuses,
         source="reported_by_message_header_not_verified",
@@ -48,7 +69,7 @@ def analyze_authentication(parsed: ParsedEmail) -> AuthenticationResults:
         dkim_domains=dkim_domains,
         spf_alignment=spf_alignment,
         dkim_alignment=dkim_alignment,
-        alignment_note="",
+        alignment_note=None,
     )
 
 
@@ -100,10 +121,8 @@ def _normalize_domain(value: str) -> str:
         return ""
 
 
-def _alignment(status: str, from_domain: str, domains: list[str]) -> str:
-    if status not in {"pass", "fail", "softfail", "permerror", "neutral", "none"} or not from_domain:
-        return "unknown"
-    if status != "pass" or not domains:
+def _alignment(from_domain: str, domains: list[str]) -> str:
+    if not from_domain or not domains:
         return "unknown"
     return "aligned" if any(_org_domain(from_domain) == _org_domain(domain) for domain in domains) else "not_aligned"
 

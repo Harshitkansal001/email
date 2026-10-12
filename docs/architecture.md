@@ -8,9 +8,10 @@ Browser (React + TypeScript)
 FastAPI request size limits → stdlib email parser
                                │
                                ├─ selected header evidence
-                               ├─ MIME metadata + bounded text
-                               ├─ URL host + redacted path/query + IP scope
+                               ├─ MIME metadata + bounded text + part provenance
+                               ├─ URL and remote-image evidence + redacted path/query + IP scope
                                ├─ reported auth + Received route
+                               ├─ recipient-aware export redaction
                                └─ deterministic rules
                                       │
                                       ▼
@@ -34,14 +35,14 @@ FastAPI request size limits → stdlib email parser
 | `POST /api/v1/analyze/file` | raw bytes; `application/octet-stream` or `message/rfc822`; at most 5 MiB | `AnalysisResponse` |
 | `POST /api/v1/analyze/headers` | JSON object with `raw_headers`, at most 64 KiB of text | `AnalysisResponse` |
 
-Analysis responses use schema version `1.0` and include classification, rule priority, findings, evidence, authentication, routing, indicators, and limitations. Failures use a stable `error.code` and a user-safe `error.message`.
+Analysis responses use schema version `1.0` and include classification, rule priority, findings, evidence, authentication, routing, link and remote-image indicators, and limitations. Recipient local parts learned from `To`, `Delivered-To`, and `Received for <...>` fields are redacted in report strings, including VERP tokens; sender addresses remain visible for comparison. Failures use a stable `error.code` and a user-safe `error.message`.
 
 ## Interpretation and known limits
 
 - `suspicious` means at least one medium or high severity rule matched. `inconclusive` means only low severity rules matched. `no_known_indicators` means no current rule matched. `risk_level` is not a calibrated score.
-- SPF, DKIM, and DMARC are parsed from `Authentication-Results`; domain alignment uses common public suffixes and the header is not independently verified.
+- SPF, DKIM, and DMARC are parsed from `Authentication-Results`; DKIM alignment uses passing per-signature domains when reported, and the header is not independently verified.
 - Received values are displayed oldest-first by reversing header order. Any individual Received value can be forged. Candidate IPs are categorized by address scope; when a local GeoLite2 City database is installed, up to five public IPs receive approximate city-level location data without leaving the machine.
-- The parser limits physical lines, header-like lines, selected headers, each displayed value, body text, MIME count/depth, URL count, and input size. Link extraction retains a sanitized path/query and never opens links or attachments.
+- The parser limits physical lines, header-like lines, selected headers, each displayed value, body text, MIME count/depth, URL count, and input size. Link extraction retains a sanitized path/query and identifies its MIME source part; remote images are listed separately. Links and images are never opened.
 - Public IP registration data is optional and off by default. When enabled, up to five public IPs are sent to their IANA-bootstrapped regional RDAP registry over HTTPS; registry hosts are allowlisted and redirects are blocked. Registration details identify a network and may not identify the sender.
 - Local geolocation uses `backend/data/GeoLite2-City.mmdb` or `MAXMIND_CITY_DB_PATH`. The database is not included in the repository and must be downloaded and kept current by the user.
 - The classifier is not configured. Sender/body rules include display-name mismatch, urgency with a link, known click trackers, benign signals, and Date/Received/explicit Message-ID epoch comparisons.

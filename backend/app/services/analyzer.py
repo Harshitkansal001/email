@@ -7,11 +7,13 @@ from app.services.header_trace import analyze_authentication, analyze_routing
 from app.services.indicators import extract_indicators, ip_category
 from app.services.ip_enrichment import enrich_public_ips
 from app.services.ml_classifier import classify
+from app.services.privacy import redact_recipient_identifiers, recipient_local_parts
 from app.services.rules_engine import evaluate_rules
 
 
 def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False, verify_rdns: bool = False) -> AnalysisResponse:
     parsed = parse_email(raw, input_type)
+    recipient_locals = recipient_local_parts(parsed.headers)
     header_evidence: dict[tuple[str, str], Evidence] = {}
     for ref, name, value in parsed.headers:
         item = header_evidence.get((name.casefold(), value))
@@ -34,7 +36,7 @@ def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False, verif
 
     authentication = analyze_authentication(parsed)
     routing, route_ips = analyze_routing(parsed)
-    urls, ip_indicators, link_evidence, indicator_limitations = extract_indicators(parsed)
+    urls, remote_images, ip_indicators, link_evidence, indicator_limitations = extract_indicators(parsed)
     targets: dict[tuple[str, str], list[str]] = {}
     for item in urls:
         targets.setdefault((item.host, item.path), []).append(item.evidence_ref)
@@ -65,7 +67,7 @@ def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False, verif
     if not findings:
         limitations.append("No known rule indicators were found; this does not establish that the message is safe.")
 
-    return AnalysisResponse(
+    report = AnalysisResponse(
         analyzed_at=datetime.now(timezone.utc),
         input_type=input_type,
         classification=classification,
@@ -75,6 +77,7 @@ def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False, verif
         evidence=evidence,
         attachments=parsed.attachments,
         url_indicators=urls,
+        remote_images=remote_images,
         ip_indicators=ip_indicators,
         authentication=authentication,
         routing=routing,
@@ -83,3 +86,4 @@ def analyze_message(raw: bytes, input_type: str, enrich_ips: bool = False, verif
         unique_targets=unique_targets,
         limitations=list(dict.fromkeys(limitations)),
     )
+    return redact_recipient_identifiers(report, recipient_locals)
